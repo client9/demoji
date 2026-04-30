@@ -29,8 +29,8 @@ type Format uint
 
 const (
 	FormatUnicode   Format = 1 << iota // 😀  actual unicode emoji codepoints
-	FormatEmoticon                      // :-)  classic ASCII emoticons
-	FormatShortcode                     // :grinning:  GitHub / Gemoji shortcodes
+	FormatEmoticon                     // :-)  classic ASCII emoticons
+	FormatShortcode                    // :grinning:  GitHub / Gemoji shortcodes
 )
 
 // Option configures the extension.
