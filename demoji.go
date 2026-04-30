@@ -18,6 +18,9 @@
 package demoji
 
 import (
+	"maps"
+	"sync"
+
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/util"
@@ -33,14 +36,46 @@ const (
 	FormatShortcode                    // :grinning:  GitHub / Gemoji shortcodes
 )
 
+// defaultEmoticons and defaultShortcodes are the shared, read-only base maps.
+// They are built once from the builtin slices and reused across all New() calls
+// that have no customisation options.
+var (
+	defaultEmoticons  map[string]string
+	defaultShortcodes map[string]string
+	emoticonsOnce     sync.Once
+	shortcodesOnce    sync.Once
+)
+
+func getDefaultEmoticons() map[string]string {
+	emoticonsOnce.Do(func() {
+		defaultEmoticons = make(map[string]string, len(builtinEmoticons))
+		for _, p := range builtinEmoticons {
+			defaultEmoticons[p[0]] = p[1]
+		}
+	})
+	return defaultEmoticons
+}
+
+func getDefaultShortcodes() map[string]string {
+	shortcodesOnce.Do(func() {
+		defaultShortcodes = make(map[string]string, len(builtinShortcodes))
+		for _, p := range builtinShortcodes {
+			defaultShortcodes[p[0]] = p[1]
+		}
+	})
+	return defaultShortcodes
+}
+
 // Option configures the extension.
 type Option func(*config)
 
 type config struct {
-	from       Format
-	to         Format
-	emoticons  map[string]string // emoticon → emoji
-	shortcodes map[string]string // :shortcode: → emoji
+	from          Format
+	to            Format
+	emoticons     map[string]string // emoticon → emoji
+	shortcodes    map[string]string // :shortcode: → emoji
+	ownEmoticons  bool              // true when emoticons is a private copy safe to mutate
+	ownShortcodes bool              // true when shortcodes is a private copy safe to mutate
 }
 
 // WithFrom sets the source format(s). OR multiple values to convert several
@@ -71,13 +106,11 @@ func WithAdditional(format Format, m map[string]string) Option {
 	return func(c *config) {
 		switch format {
 		case FormatEmoticon:
-			for k, v := range m {
-				c.emoticons[k] = v
-			}
+			c.cowEmoticons()
+			maps.Copy(c.emoticons, m)
 		case FormatShortcode:
-			for k, v := range m {
-				c.shortcodes[k] = v
-			}
+			c.cowShortcodes()
+			maps.Copy(c.shortcodes, m)
 		}
 	}
 }
@@ -90,14 +123,32 @@ func WithExclude(format Format, keys ...string) Option {
 	return func(c *config) {
 		switch format {
 		case FormatEmoticon:
+			c.cowEmoticons()
 			for _, k := range keys {
 				delete(c.emoticons, k)
 			}
 		case FormatShortcode:
+			c.cowShortcodes()
 			for _, k := range keys {
 				delete(c.shortcodes, k)
 			}
 		}
+	}
+}
+
+// cowEmoticons copies the shared emoticons map before the first mutation.
+func (c *config) cowEmoticons() {
+	if !c.ownEmoticons {
+		c.emoticons = maps.Clone(c.emoticons)
+		c.ownEmoticons = true
+	}
+}
+
+// cowShortcodes copies the shared shortcodes map before the first mutation.
+func (c *config) cowShortcodes() {
+	if !c.ownShortcodes {
+		c.shortcodes = maps.Clone(c.shortcodes)
+		c.ownShortcodes = true
 	}
 }
 
@@ -112,14 +163,8 @@ func New(opts ...Option) *Extension {
 	cfg := &config{
 		from:       FormatUnicode,
 		to:         FormatEmoticon,
-		emoticons:  make(map[string]string, len(builtinEmoticons)),
-		shortcodes: make(map[string]string, len(builtinShortcodes)),
-	}
-	for _, pair := range builtinEmoticons {
-		cfg.emoticons[pair[0]] = pair[1]
-	}
-	for _, pair := range builtinShortcodes {
-		cfg.shortcodes[pair[0]] = pair[1]
+		emoticons:  getDefaultEmoticons(),
+		shortcodes: getDefaultShortcodes(),
 	}
 	for _, opt := range opts {
 		opt(cfg)

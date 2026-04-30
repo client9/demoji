@@ -272,3 +272,17 @@ func TestWithExcludeShortcode(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
+
+func BenchmarkNew(b *testing.B) {
+	b.Run("no_options", func(b *testing.B) {
+		for range b.N {
+			_ = demoji.New()
+		}
+	})
+	b.Run("with_additional", func(b *testing.B) {
+		extra := map[string]string{"^^": "😊"}
+		for range b.N {
+			_ = demoji.New(demoji.WithAdditional(demoji.FormatEmoticon, extra))
+		}
+	})
+}
