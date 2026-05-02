@@ -1,4 +1,7 @@
 # demoji
+[![Go Reference](https://pkg.go.dev/badge/github.com/client9/demoji.svg)](https://pkg.go.dev/github.com/client9/demoji)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://github.com/client9/demoji/actions/workflows/go.yml/badge.svg)](https://github.com/client9/demoji/actions)
 
 Converts between Unicode emoji, ASCII emoticons, and GitHub-style shortcodes in plain
 strings — in either direction.
@@ -139,3 +142,8 @@ go generate ./...
 
 - [github.com/client9/goldmark-demoji](https://github.com/client9/goldmark-demoji) —
   goldmark extension wrapper with functional options
+
+## License
+
+[MIT](/LICENSE)
+
