@@ -1,43 +1,26 @@
 package demoji_test
 
 import (
-	"bytes"
+	"maps"
 	"testing"
 
 	"github.com/client9/demoji"
-	"github.com/yuin/goldmark"
 )
-
-func render(t *testing.T, ext *demoji.Extension, src string) string {
-	t.Helper()
-	md := goldmark.New(goldmark.WithExtensions(ext))
-	var buf bytes.Buffer
-	if err := md.Convert([]byte(src), &buf); err != nil {
-		t.Fatalf("Convert: %v", err)
-	}
-	return buf.String()
-}
 
 // --- unicode → emoticon (default) ---
 
-func TestDemojiToEmoticon(t *testing.T) {
-	ext := demoji.New() // FormatUnicode → FormatEmoticon by default
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"smile", "Hello 🙂 world", "<p>Hello :-) world</p>\n"},
-		{"grin", "Woohoo 😀", "<p>Woohoo :-D</p>\n"},
-		{"multiple", "😀 and 😉", "<p>:-D and ;-)</p>\n"},
-		{"love", "I ❤️ Go", "<p>I &lt;3 Go</p>\n"},
-		{"broken heart", "💔", "<p>&lt;/3</p>\n"},
-		{"no emoji", "Plain text", "<p>Plain text</p>\n"},
+func TestUnicodeToEmoticon(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"smile", "Hello 🙂 world", "Hello :-) world"},
+		{"grin", "Woohoo 😀", "Woohoo :-D"},
+		{"multiple", "😀 and 😉", ":-D and ;-)"},
+		{"love", "I ❤️ Go", "I <3 Go"},
+		{"broken heart", "💔", "</3"},
+		{"no emoji", "Plain text", "Plain text"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := render(t, ext, tt.input)
+			got := demoji.Replace(tt.in)
 			if got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}
@@ -45,28 +28,41 @@ func TestDemojiToEmoticon(t *testing.T) {
 	}
 }
 
+func TestVS16(t *testing.T) {
+	// ❤️ is U+2764 U+FE0F — emoticons table stores the VS16 form, so it converts.
+	got := demoji.Replace("I ❤️ Go")
+	if got != "I <3 Go" {
+		t.Errorf("VS16 emoticon: got %q", got)
+	}
+	// In unicode→shortcode direction, GitHub data stores the bare codepoint (U+2764).
+	// The VS16 logic adds a U+FE0F variant, so ❤️ also maps to :heart:.
+	r := demoji.New(demoji.Config{From: demoji.FormatUnicode, To: demoji.FormatShortcode})
+	got = r.Replace("I ❤️ Go")
+	if got != "I :heart: Go" {
+		t.Errorf("VS16 shortcode: got %q", got)
+	}
+	got = r.Replace("I ❤ Go")
+	if got != "I :heart: Go" {
+		t.Errorf("bare shortcode: got %q", got)
+	}
+}
+
 // --- unicode → shortcode ---
 
-func TestDemojiToShortcode(t *testing.T) {
-	ext := demoji.New(
-		demoji.WithFrom(demoji.FormatUnicode),
-		demoji.WithTo(demoji.FormatShortcode),
-	)
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"smile", "Hello 🙂 world", "<p>Hello :slightly_smiling_face: world</p>\n"},
-		{"grin", "Woohoo 😀", "<p>Woohoo :grinning:</p>\n"},
-		{"wink", "😉", "<p>:wink:</p>\n"},
-		{"heart", "I ❤️ Go", "<p>I :heart: Go</p>\n"},
-		{"no emoji", "Plain text", "<p>Plain text</p>\n"},
+func TestUnicodeToShortcode(t *testing.T) {
+	r := demoji.New(demoji.Config{
+		From: demoji.FormatUnicode,
+		To:   demoji.FormatShortcode,
+	})
+	tests := []struct{ name, in, want string }{
+		{"smile", "Hello 🙂 world", "Hello :slightly_smiling_face: world"},
+		{"grin", "Woohoo 😀", "Woohoo :grinning:"},
+		{"heart", "I ❤️ Go", "I :heart: Go"},
+		{"no emoji", "Plain text", "Plain text"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := render(t, ext, tt.input)
+			got := r.Replace(tt.in)
 			if got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}
@@ -76,25 +72,20 @@ func TestDemojiToShortcode(t *testing.T) {
 
 // --- emoticon → unicode ---
 
-func TestRemojiFromEmoticon(t *testing.T) {
-	ext := demoji.New(demoji.WithFrom(demoji.FormatEmoticon))
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"classic smile", "Hello :-) world", "<p>Hello 🙂 world</p>\n"},
-		{"short smile", "Hi :)", "<p>Hi 🙂</p>\n"},
-		{"wink", ";-) wink", "<p>😉 wink</p>\n"},
-		{"angel longer first", "O:-) angel", "<p>😇 angel</p>\n"},
-		{"love", "I <3 Go", "<p>I ❤️ Go</p>\n"},
-		{"multiple", ":-) and :-(", "<p>🙂 and 🙁</p>\n"},
-		{"no emoticons", "Plain text", "<p>Plain text</p>\n"},
+func TestEmoticonToUnicode(t *testing.T) {
+	r := demoji.New(demoji.Config{From: demoji.FormatEmoticon})
+	tests := []struct{ name, in, want string }{
+		{"classic smile", "Hello :-) world", "Hello 🙂 world"},
+		{"short smile", "Hi :)", "Hi 🙂"},
+		{"wink", ";-) wink", "😉 wink"},
+		{"longer first", "O:-) angel", "😇 angel"},
+		{"love", "I <3 Go", "I ❤️ Go"},
+		{"multiple", ":-) and :-(", "🙂 and 🙁"},
+		{"no emoticons", "Plain text", "Plain text"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := render(t, ext, tt.input)
+			got := r.Replace(tt.in)
 			if got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}
@@ -104,23 +95,17 @@ func TestRemojiFromEmoticon(t *testing.T) {
 
 // --- shortcode → unicode ---
 
-func TestRemojiFromShortcode(t *testing.T) {
-	ext := demoji.New(demoji.WithFrom(demoji.FormatShortcode))
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"smile", "Hello :slightly_smiling_face: world", "<p>Hello 🙂 world</p>\n"},
-		{"grin", ":grinning:", "<p>😀</p>\n"},
-		{"long shortcode first", ":stuck_out_tongue_winking_eye:", "<p>😜</p>\n"},
-		{"heart", "I :heart: Go", "<p>I ❤ Go</p>\n"},
-		{"no shortcodes", "Plain text", "<p>Plain text</p>\n"},
+func TestShortcodeToUnicode(t *testing.T) {
+	r := demoji.New(demoji.Config{From: demoji.FormatShortcode})
+	tests := []struct{ name, in, want string }{
+		{"smile", "Hello :slightly_smiling_face: world", "Hello 🙂 world"},
+		{"grin", ":grinning:", "😀"},
+		{"heart", "I :heart: Go", "I ❤ Go"},
+		{"no shortcodes", "Plain text", "Plain text"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := render(t, ext, tt.input)
+			got := r.Replace(tt.in)
 			if got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}
@@ -130,35 +115,16 @@ func TestRemojiFromShortcode(t *testing.T) {
 
 // --- emoticon | shortcode → unicode (single pass, bitfield) ---
 
-func TestRemojiCombined(t *testing.T) {
-	ext := demoji.New(
-		demoji.WithFrom(demoji.FormatEmoticon | demoji.FormatShortcode),
-	)
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			"emoticon and shortcode in same node",
-			":-) and :grinning: are both happy",
-			"<p>🙂 and 😀 are both happy</p>\n",
-		},
-		{
-			"shortcode only",
-			":wink:",
-			"<p>😉</p>\n",
-		},
-		{
-			"emoticon only",
-			";-)",
-			"<p>😉</p>\n",
-		},
+func TestCombinedToUnicode(t *testing.T) {
+	r := demoji.New(demoji.Config{From: demoji.FormatEmoticon | demoji.FormatShortcode})
+	tests := []struct{ name, in, want string }{
+		{"both", ":-) and :grinning: are both happy", "🙂 and 😀 are both happy"},
+		{"shortcode only", ":wink:", "😉"},
+		{"emoticon only", ";-)", "😉"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := render(t, ext, tt.input)
+			got := r.Replace(tt.in)
 			if got != tt.want {
 				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}
@@ -166,123 +132,107 @@ func TestRemojiCombined(t *testing.T) {
 	}
 }
 
-// --- code blocks and spans are skipped ---
+// --- zero Config is a no-op ---
 
-func TestSkipsCodeSpan(t *testing.T) {
-	tests := []struct {
-		mode  demoji.Format
-		input string
-		want  string
-	}{
-		{
-			demoji.FormatUnicode,
-			"outside 🙂 but `inside 🙂 code`",
-			"<p>outside :-) but <code>inside 🙂 code</code></p>\n",
-		},
-		{
-			demoji.FormatEmoticon,
-			"outside :-) but `inside :-)  code`",
-			"<p>outside 🙂 but <code>inside :-)  code</code></p>\n",
-		},
-		{
-			demoji.FormatShortcode,
-			"outside :grinning: but `inside :grinning: code`",
-			"<p>outside 😀 but <code>inside :grinning: code</code></p>\n",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input[:15], func(t *testing.T) {
-			got := render(t, demoji.New(demoji.WithFrom(tt.mode)), tt.input)
-			if got != tt.want {
-				t.Errorf("got  %q\nwant %q", got, tt.want)
-			}
-		})
+func TestNoop(t *testing.T) {
+	r := demoji.New(demoji.Config{})
+	got := r.Replace("Hello 🙂 :-) :grinning:")
+	if got != "Hello 🙂 :-) :grinning:" {
+		t.Errorf("Config{} should be no-op, got %q", got)
 	}
 }
 
-func TestSkipsFencedCodeBlock(t *testing.T) {
-	input := "```\n🙂 :-) :grinning:\n```"
-	got := render(t, demoji.New(), input)
-	want := "<pre><code>🙂 :-) :grinning:\n</code></pre>\n"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
+// --- ReplaceBytes ---
+
+func TestReplaceBytes(t *testing.T) {
+	got := demoji.ReplaceBytes([]byte("Hello 🙂"))
+	if string(got) != "Hello :-)" {
+		t.Errorf("got %q", got)
 	}
 }
 
-// --- configuration: WithAdditional and WithExclude ---
+// --- custom maps ---
 
-func TestWithAdditional(t *testing.T) {
-	ext := demoji.New(
-		demoji.WithFrom(demoji.FormatEmoticon),
-		demoji.WithAdditional(demoji.FormatEmoticon, map[string]string{"^^": "😊"}),
-	)
-	got := render(t, ext, "Hello ^^ world")
-	want := "<p>Hello 😊 world</p>\n"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
+func TestCustomEmoticons(t *testing.T) {
+	custom := maps.Clone(demoji.DefaultEmoticons())
+	custom["^^"] = "😊"
+	r := demoji.New(demoji.Config{
+		From:      demoji.FormatEmoticon,
+		Emoticons: custom,
+	})
+	got := r.Replace("Hello ^^ world")
+	if got != "Hello 😊 world" {
+		t.Errorf("got %q", got)
 	}
 }
 
-func TestWithAdditionalShortcode(t *testing.T) {
-	ext := demoji.New(
-		demoji.WithFrom(demoji.FormatShortcode),
-		demoji.WithAdditional(demoji.FormatShortcode, map[string]string{":unicorn:": "🦄"}),
-	)
-	got := render(t, ext, "Hello :unicorn: world")
-	want := "<p>Hello 🦄 world</p>\n"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
+func TestExcludeEmoticon(t *testing.T) {
+	// Remove both forms of the smile emoticon — emoji should pass through.
+	custom := maps.Clone(demoji.DefaultEmoticons())
+	delete(custom, ":-)") // remove canonical
+	delete(custom, ":)")  // remove fallback
+	r := demoji.New(demoji.Config{
+		From:      demoji.FormatUnicode,
+		To:        demoji.FormatEmoticon,
+		Emoticons: custom,
+	})
+	got := r.Replace("Hello 🙂 world")
+	if got != "Hello 🙂 world" {
+		t.Errorf("got %q", got)
 	}
 }
 
-func TestWithExclude(t *testing.T) {
-	// Exclude both variants so 🙂 is no longer converted.
-	ext := demoji.New(
-		demoji.WithExclude(demoji.FormatEmoticon, ":-)", ":)"),
-	)
-	got := render(t, ext, "Hello 🙂 world")
-	want := "<p>Hello 🙂 world</p>\n"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
+func TestCanonicalFallback(t *testing.T) {
+	// Remove the canonical ":-)" — should fall back to ":)".
+	custom := maps.Clone(demoji.DefaultEmoticons())
+	delete(custom, ":-)")
+	r := demoji.New(demoji.Config{
+		From:      demoji.FormatUnicode,
+		To:        demoji.FormatEmoticon,
+		Emoticons: custom,
+	})
+	got := r.Replace("Hello 🙂 world")
+	if got != "Hello :) world" {
+		t.Errorf("got %q", got)
 	}
 }
 
-func TestWithExcludeCanonicalFallback(t *testing.T) {
-	// Exclude canonical ":-)" but keep ":)"; demoji should fall back to ":)".
-	ext := demoji.New(
-		demoji.WithExclude(demoji.FormatEmoticon, ":-)"),
-	)
-	got := render(t, ext, "Hello 🙂 world")
-	want := "<p>Hello :) world</p>\n"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
-	}
-}
-
-func TestWithExcludeShortcode(t *testing.T) {
-	ext := demoji.New(
-		demoji.WithFrom(demoji.FormatUnicode),
-		demoji.WithTo(demoji.FormatShortcode),
-		demoji.WithExclude(demoji.FormatShortcode, ":grinning:"),
-	)
+func TestExcludeShortcode(t *testing.T) {
+	custom := maps.Clone(demoji.DefaultShortcodes())
+	delete(custom, ":grinning:")
+	r := demoji.New(demoji.Config{
+		From:       demoji.FormatUnicode,
+		To:         demoji.FormatShortcode,
+		Shortcodes: custom,
+	})
 	// 😀 excluded → passes through unchanged
-	got := render(t, ext, "Woohoo 😀")
-	want := "<p>Woohoo 😀</p>\n"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
+	got := r.Replace("Woohoo 😀")
+	if got != "Woohoo 😀" {
+		t.Errorf("got %q", got)
 	}
 }
 
 func BenchmarkNew(b *testing.B) {
-	b.Run("no_options", func(b *testing.B) {
+	b.Run("default", func(b *testing.B) {
 		for range b.N {
-			_ = demoji.New()
+			_ = demoji.New(demoji.DefaultConfig())
 		}
 	})
-	b.Run("with_additional", func(b *testing.B) {
-		extra := map[string]string{"^^": "😊"}
+	b.Run("with_custom_map", func(b *testing.B) {
+		extra := maps.Clone(demoji.DefaultEmoticons())
+		extra["^^"] = "😊"
+		cfg := demoji.Config{From: demoji.FormatEmoticon, Emoticons: extra}
 		for range b.N {
-			_ = demoji.New(demoji.WithAdditional(demoji.FormatEmoticon, extra))
+			_ = demoji.New(cfg)
 		}
 	})
+}
+
+func BenchmarkReplace(b *testing.B) {
+	r := demoji.New(demoji.DefaultConfig())
+	s := "Hello 🙂 and 😀 and ❤️ Go"
+	b.ResetTimer()
+	for range b.N {
+		_ = r.Replace(s)
+	}
 }

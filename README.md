@@ -1,12 +1,15 @@
 # demoji
 
-A [goldmark](https://github.com/yuin/goldmark) extension that converts between unicode emoji, classic ASCII emoticons, and GitHub-style shortcodes — in either direction.
+Converts between Unicode emoji, ASCII emoticons, and GitHub-style shortcodes in plain
+strings — in either direction.
 
 ```
-😀  ↔  :-D          (unicode ↔ emoticon)
+😀  ↔  :-D                       (unicode ↔ emoticon)
 🙂  ↔  :slightly_smiling_face:   (unicode ↔ shortcode)
-:-) ↔  :slightly_smiling_face:   (emoticon ↔ shortcode, via two passes)
 ```
+
+Zero dependencies. For a goldmark extension see
+[goldmark-demoji](https://github.com/client9/goldmark-demoji).
 
 ## Install
 
@@ -14,128 +17,125 @@ A [goldmark](https://github.com/yuin/goldmark) extension that converts between u
 go get github.com/client9/demoji
 ```
 
-Requires Go 1.22+ and goldmark v1.7+.
-
 ## Quick start
 
 ```go
-import (
-    "github.com/client9/demoji"
-    "github.com/yuin/goldmark"
-)
+import "github.com/client9/demoji"
 
-// unicode emoji → ASCII emoticons (default)
-md := goldmark.New(goldmark.WithExtensions(demoji.New()))
+// Package-level default: unicode emoji → ASCII emoticons.
+clean := demoji.Replace(s)
+clean  = demoji.ReplaceBytes(b)
 
-// ASCII emoticons → unicode emoji
-md := goldmark.New(goldmark.WithExtensions(
-    demoji.New(demoji.WithFrom(demoji.FormatEmoticon)),
-))
-
-// GitHub shortcodes → unicode emoji
-md := goldmark.New(goldmark.WithExtensions(
-    demoji.New(demoji.WithFrom(demoji.FormatShortcode)),
-))
-
-// unicode emoji → GitHub shortcodes
-md := goldmark.New(goldmark.WithExtensions(
-    demoji.New(
-        demoji.WithFrom(demoji.FormatUnicode),
-        demoji.WithTo(demoji.FormatShortcode),
-    ),
-))
+// Configured instance.
+r := demoji.New(demoji.Config{From: demoji.FormatEmoticon})
+clean  = r.Replace(s)
 ```
 
 ## Formats
 
 | Constant | Example | Description |
 |----------|---------|-------------|
-| `FormatUnicode` | `😀` | Actual unicode emoji codepoints |
+| `FormatUnicode` | `😀` | Unicode emoji codepoints |
 | `FormatEmoticon` | `:-D` | Classic ASCII emoticons |
-| `FormatShortcode` | `:grinning:` | GitHub / Gemoji shortcode names |
+| `FormatShortcode` | `:grinning:` | GitHub / Gemoji shortcodes |
 
-`WithFrom` accepts a bitfield — combine formats to convert multiple sources to unicode in one pass:
+## Conversion directions
 
-```go
-// emoticons AND shortcodes → unicode in a single AST walk
-md := goldmark.New(goldmark.WithExtensions(
-    demoji.New(
-        demoji.WithFrom(demoji.FormatEmoticon | demoji.FormatShortcode),
-    ),
-))
-```
-
-Input `":-) and :grinning: both work"` → `"🙂 and 😀 both work"`.
-
-## Built-in mappings
-
-**Emoticons** (~40 entries): the classic set — `:-)` `:)` `:-D` `:-(`  `;-)` `:-P` `:-O` `B-)` `O:-)` `>:(` `:'(` `<3` `</3` `XD` `-_-` and their variants.
-
-**Shortcodes** (1913 entries): the full [GitHub emoji](https://api.github.com/emojis) set, minus 23 GitHub-custom images (`:octocat:`, `:shipit:`, etc.) that have no unicode codepoint.
-
-Content inside code spans and fenced code blocks is never modified.
+| Config | Effect |
+|--------|--------|
+| `DefaultConfig()` | unicode → emoticon (default) |
+| `Config{From: FormatUnicode, To: FormatShortcode}` | unicode → shortcode |
+| `Config{From: FormatEmoticon}` | emoticon → unicode |
+| `Config{From: FormatShortcode}` | shortcode → unicode |
+| `Config{From: FormatEmoticon \| FormatShortcode}` | both → unicode in one pass |
+| `Config{}` | no-op |
 
 ## Configuration
 
-### Add mappings
+### Config struct
 
 ```go
-demoji.New(
-    demoji.WithFrom(demoji.FormatEmoticon),
-    demoji.WithAdditional(demoji.FormatEmoticon, map[string]string{
-        "^^":  "😊",
-        "o/":  "👋",
-    }),
-)
+type Config struct {
+    From       Format            // source format(s); bitfield for multiple
+    To         Format            // target; only used when From includes FormatUnicode
+    Emoticons  map[string]string // nil = use builtins
+    Shortcodes map[string]string // nil = use builtins
+}
 ```
 
-### Remove mappings
+### DefaultConfig
+
+`New(Config{})` is a no-op — zero `From` means no conversions. Use `DefaultConfig()`
+as a starting point when you want the defaults plus modifications:
 
 ```go
-// stop converting XD and xD
-demoji.New(
-    demoji.WithExclude(demoji.FormatEmoticon, "XD", "xD"),
-)
-
-// stop converting a shortcode
-demoji.New(
-    demoji.WithFrom(demoji.FormatShortcode),
-    demoji.WithExclude(demoji.FormatShortcode, ":cry:"),
-)
+cfg := demoji.DefaultConfig()          // unicode → emoticon
+cfg.From = demoji.FormatShortcode      // change direction
+r := demoji.New(cfg)
 ```
 
-### Shift the canonical emoticon
+### Custom maps
 
-In unicode→emoticon mode each emoji has one canonical text form (the first active entry in the builtin list). Excluding the current canonical promotes the next entry:
+`DefaultEmoticons()` and `DefaultShortcodes()` return the shared built-in maps
+(read-only). Clone before modifying:
+
+```go
+import "maps"
+
+// Add a custom emoticon.
+emoticons := maps.Clone(demoji.DefaultEmoticons())
+emoticons["^^"] = "😊"
+r := demoji.New(demoji.Config{
+    From:      demoji.FormatEmoticon,
+    Emoticons: emoticons,
+})
+
+// Exclude an emoticon.
+emoticons = maps.Clone(demoji.DefaultEmoticons())
+delete(emoticons, ":-)")
+delete(emoticons, ":)")
+r = demoji.New(demoji.Config{
+    From:      demoji.FormatUnicode,
+    To:        demoji.FormatEmoticon,
+    Emoticons: emoticons,
+})
+```
+
+### Canonical text selection
+
+In unicode→text mode each emoji maps to one canonical text form — the first active entry
+in the built-in table. To shift the canonical, exclude the current leader:
 
 ```go
 // default: 🙂 → :-)
-// after exclude: 🙂 → :)
-demoji.New(
-    demoji.WithExclude(demoji.FormatEmoticon, ":-)"),
-)
+// after removing ":-)", the next entry ":)" becomes canonical:
+emoticons := maps.Clone(demoji.DefaultEmoticons())
+delete(emoticons, ":-)")
+r := demoji.New(demoji.Config{
+    From:      demoji.FormatUnicode,
+    To:        demoji.FormatEmoticon,
+    Emoticons: emoticons,
+})
+r.Replace("🙂") // → ":)"
 ```
 
-## Regenerating shortcode data
+## Built-in data
 
-The shortcode table is generated from a local copy of the GitHub emoji API response:
+**Emoticons** (~40 entries): `O:-)` `>:(` `:'(` `:-)` `:)` `:-D` `:D` `:-(` `:(` `;-)`
+`;)` `:-P` `:-O` `:-|` `:-*` `-_-` `XD` `<3` `</3` and variants.
+
+**Shortcodes** (1913 entries): the full [GitHub emoji](https://api.github.com/emojis) set,
+minus 23 GitHub-custom entries (`:octocat:`, `:shipit:`, etc.) that have no unicode
+codepoint.
+
+### Regenerating shortcode data
 
 ```bash
-# refresh the source data
 curl -s https://api.github.com/emojis > emojis.json
-
-# regenerate shortcodes_gen.go
 go generate ./...
 ```
 
-## How it works
+## Related
 
-Conversions that search for text patterns (emoticon→unicode, shortcode→unicode) use goldmark's inline parser and AST transformer APIs so that code spans and fenced blocks are automatically excluded.
-
-Shortcode→unicode uses a dedicated **inline parser** triggered on `:` rather than an AST transformer. This is necessary because goldmark's emphasis tokenizer splits text at `_` boundaries before AST transformers run, which would break shortcode names like `:slightly_smiling_face:`.
-
-When `WithFrom` specifies multiple formats, both mechanisms run cooperatively in a single parse — the inline parser handles shortcodes during tokenization, the AST transformer handles emoticons afterward.
-
-## License
-
-MIT
+- [github.com/client9/goldmark-demoji](https://github.com/client9/goldmark-demoji) —
+  goldmark extension wrapper with functional options

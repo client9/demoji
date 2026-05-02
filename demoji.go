@@ -1,33 +1,32 @@
-// Package demoji provides a goldmark extension that converts between unicode
-// emoji, classic ASCII emoticons, and GitHub-style shortcodes.
+// Package demoji converts between Unicode emoji, ASCII emoticons, and
+// GitHub-style shortcodes in plain strings.
 //
-// The source and target formats are specified independently. Multiple source
-// formats can be OR'd together for a single-pass conversion:
+// Use package-level functions for the default conversion (unicode → emoticons):
 //
-//	// unicode emoji → ASCII emoticons (default)
-//	demoji.New()
+//	clean := demoji.Replace(s)
+//	clean := demoji.ReplaceBytes(b)
 //
-//	// ASCII emoticons → unicode emoji
-//	demoji.New(demoji.WithFrom(demoji.FormatEmoticon))
+// Configure with a Config struct:
 //
-//	// both emoticons and shortcodes → unicode, in one pass
-//	demoji.New(demoji.WithFrom(demoji.FormatEmoticon | demoji.FormatShortcode))
+//	r := demoji.New(demoji.Config{
+//	    From: demoji.FormatEmoticon,
+//	})
+//	clean := r.Replace(s)
 //
-//	// unicode → GitHub shortcodes
-//	demoji.New(demoji.WithFrom(demoji.FormatUnicode), demoji.WithTo(demoji.FormatShortcode))
+// Zero From/To are not auto-resolved — use DefaultConfig() as a base:
+//
+//	cfg := demoji.DefaultConfig()
+//	cfg.From = demoji.FormatShortcode
+//	r := demoji.New(cfg)
 package demoji
 
 import (
-	"maps"
+	"strings"
 	"sync"
-
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/util"
 )
 
 // Format identifies an emoji representation. It is a bitfield so multiple
-// source formats can be combined with WithFrom.
+// source formats can be combined in the From field.
 type Format uint
 
 const (
@@ -36,160 +35,92 @@ const (
 	FormatShortcode                    // :grinning:  GitHub / Gemoji shortcodes
 )
 
-// defaultEmoticons and defaultShortcodes are the shared, read-only base maps.
-// They are built once from the builtin slices and reused across all New() calls
-// that have no customisation options.
+// Config configures a Replacer.
+type Config struct {
+	From       Format            // source format(s); bitfield for multiple
+	To         Format            // target format; only used when From includes FormatUnicode
+	Emoticons  map[string]string // emoticon → unicode emoji; nil = use builtins
+	Shortcodes map[string]string // :shortcode: → unicode emoji; nil = use builtins
+}
+
+// DefaultConfig returns the default configuration: unicode emoji → ASCII emoticons.
+func DefaultConfig() Config {
+	return Config{
+		From: FormatUnicode,
+		To:   FormatEmoticon,
+	}
+}
+
+// Replacer applies emoji conversions. Create with New.
+type Replacer struct {
+	sr *strings.Replacer
+}
+
+var defaultReplacer = sync.OnceValue(func() *Replacer {
+	return New(DefaultConfig())
+})
+
+// New creates a Replacer from cfg. Nil maps are resolved to the built-in
+// tables. Zero From/To are not defaulted — New(Config{}) produces a no-op
+// Replacer. Use DefaultConfig() for sensible starting values.
+func New(cfg Config) *Replacer {
+	if cfg.Emoticons == nil {
+		cfg.Emoticons = getDefaultEmoticons()
+	}
+	if cfg.Shortcodes == nil {
+		cfg.Shortcodes = getDefaultShortcodes()
+	}
+	pairs := buildPairs(cfg)
+	args := make([]string, 0, len(pairs)*2)
+	for _, p := range pairs {
+		args = append(args, p[0], p[1])
+	}
+	return &Replacer{sr: strings.NewReplacer(args...)}
+}
+
+// Replace returns s with all active conversions applied.
+func (r *Replacer) Replace(s string) string { return r.sr.Replace(s) }
+
+// ReplaceBytes returns a copy of b with all active conversions applied.
+func (r *Replacer) ReplaceBytes(b []byte) []byte { return []byte(r.sr.Replace(string(b))) }
+
+// Replace returns s with the default conversion applied (unicode emoji → emoticons).
+func Replace(s string) string { return defaultReplacer().Replace(s) }
+
+// ReplaceBytes returns a copy of b with the default conversion applied.
+func ReplaceBytes(b []byte) []byte { return defaultReplacer().ReplaceBytes(b) }
+
+// DefaultEmoticons returns the shared built-in emoticon map. Read-only —
+// call maps.Clone if you need an editable copy.
+func DefaultEmoticons() map[string]string { return getDefaultEmoticons() }
+
+// DefaultShortcodes returns the shared built-in shortcode map. Read-only —
+// call maps.Clone if you need an editable copy.
+func DefaultShortcodes() map[string]string { return getDefaultShortcodes() }
+
 var (
-	defaultEmoticons  map[string]string
-	defaultShortcodes map[string]string
-	emoticonsOnce     sync.Once
-	shortcodesOnce    sync.Once
+	defaultEmoticonMap  map[string]string
+	defaultShortcodeMap map[string]string
+	emoticonsOnce       sync.Once
+	shortcodesOnce      sync.Once
 )
 
 func getDefaultEmoticons() map[string]string {
 	emoticonsOnce.Do(func() {
-		defaultEmoticons = make(map[string]string, len(builtinEmoticons))
+		defaultEmoticonMap = make(map[string]string, len(builtinEmoticons))
 		for _, p := range builtinEmoticons {
-			defaultEmoticons[p[0]] = p[1]
+			defaultEmoticonMap[p[0]] = p[1]
 		}
 	})
-	return defaultEmoticons
+	return defaultEmoticonMap
 }
 
 func getDefaultShortcodes() map[string]string {
 	shortcodesOnce.Do(func() {
-		defaultShortcodes = make(map[string]string, len(builtinShortcodes))
+		defaultShortcodeMap = make(map[string]string, len(builtinShortcodes))
 		for _, p := range builtinShortcodes {
-			defaultShortcodes[p[0]] = p[1]
+			defaultShortcodeMap[p[0]] = p[1]
 		}
 	})
-	return defaultShortcodes
-}
-
-// Option configures the extension.
-type Option func(*config)
-
-type config struct {
-	from          Format
-	to            Format
-	emoticons     map[string]string // emoticon → emoji
-	shortcodes    map[string]string // :shortcode: → emoji
-	ownEmoticons  bool              // true when emoticons is a private copy safe to mutate
-	ownShortcodes bool              // true when shortcodes is a private copy safe to mutate
-}
-
-// WithFrom sets the source format(s). OR multiple values to convert several
-// formats in a single AST pass:
-//
-//	demoji.WithFrom(demoji.FormatEmoticon | demoji.FormatShortcode)
-//
-// Default: FormatUnicode.
-func WithFrom(f Format) Option {
-	return func(c *config) { c.from = f }
-}
-
-// WithTo sets the target format. Must be a single Format value.
-// Default: FormatEmoticon.
-func WithTo(f Format) Option {
-	return func(c *config) { c.to = f }
-}
-
-// WithAdditional adds or overrides mappings for the given format.
-// Keys are source patterns; values are the corresponding unicode emoji strings.
-//
-//	// add a custom emoticon
-//	demoji.WithAdditional(demoji.FormatEmoticon, map[string]string{"^^": "😊"})
-//
-//	// add a custom shortcode
-//	demoji.WithAdditional(demoji.FormatShortcode, map[string]string{":custom:": "🦄"})
-func WithAdditional(format Format, m map[string]string) Option {
-	return func(c *config) {
-		switch format {
-		case FormatEmoticon:
-			c.cowEmoticons()
-			maps.Copy(c.emoticons, m)
-		case FormatShortcode:
-			c.cowShortcodes()
-			maps.Copy(c.shortcodes, m)
-		}
-	}
-}
-
-// WithExclude removes the named patterns from the active mapping for the given format.
-//
-//	demoji.WithExclude(demoji.FormatEmoticon, ":-)", ":)")
-//	demoji.WithExclude(demoji.FormatShortcode, ":cry:")
-func WithExclude(format Format, keys ...string) Option {
-	return func(c *config) {
-		switch format {
-		case FormatEmoticon:
-			c.cowEmoticons()
-			for _, k := range keys {
-				delete(c.emoticons, k)
-			}
-		case FormatShortcode:
-			c.cowShortcodes()
-			for _, k := range keys {
-				delete(c.shortcodes, k)
-			}
-		}
-	}
-}
-
-// cowEmoticons copies the shared emoticons map before the first mutation.
-func (c *config) cowEmoticons() {
-	if !c.ownEmoticons {
-		c.emoticons = maps.Clone(c.emoticons)
-		c.ownEmoticons = true
-	}
-}
-
-// cowShortcodes copies the shared shortcodes map before the first mutation.
-func (c *config) cowShortcodes() {
-	if !c.ownShortcodes {
-		c.shortcodes = maps.Clone(c.shortcodes)
-		c.ownShortcodes = true
-	}
-}
-
-// Extension is the goldmark extension for emoji format conversion.
-type Extension struct {
-	cfg *config
-}
-
-// New creates the extension. With no options the default behavior is
-// unicode emoji → ASCII emoticons (equivalent to the old ModeDemoji).
-func New(opts ...Option) *Extension {
-	cfg := &config{
-		from:       FormatUnicode,
-		to:         FormatEmoticon,
-		emoticons:  getDefaultEmoticons(),
-		shortcodes: getDefaultShortcodes(),
-	}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-	return &Extension{cfg: cfg}
-}
-
-// Extend implements goldmark.Extender.
-func (e *Extension) Extend(m goldmark.Markdown) {
-	// When converting shortcodes → unicode, use an inline parser rather than
-	// an AST transformer. Shortcode names can contain underscores, and
-	// goldmark's emphasis tokenizer fragments text at '_' boundaries before
-	// any AST transformer runs, so a transformer would never see the full
-	// ":slightly_smiling_face:" string in a single node. The inline parser
-	// triggers on ':' and consumes the whole :name: before that happens.
-	if e.cfg.from&FormatShortcode != 0 && e.cfg.from&FormatUnicode == 0 {
-		m.Parser().AddOptions(
-			parser.WithInlineParsers(
-				util.Prioritized(&shortcodeInlineParser{table: e.cfg.shortcodes}, 999),
-			),
-		)
-	}
-	m.Parser().AddOptions(
-		parser.WithASTTransformers(
-			util.Prioritized(&emojiTransformer{cfg: e.cfg}, 100),
-		),
-	)
+	return defaultShortcodeMap
 }
