@@ -31,5 +31,10 @@ go.work.sum
 # .idea/
 # .vscode/
 
+# AI
+CLAUDE.md
+.claude/
+.codex/
+
 # 
 emojis.json
